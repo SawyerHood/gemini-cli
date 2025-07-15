@@ -56,6 +56,7 @@ export interface CliArgs {
   extensions: string[] | undefined;
   listExtensions: boolean | undefined;
   ideMode: boolean | undefined;
+  sdk: boolean | undefined;
 }
 
 export async function parseArguments(): Promise<CliArgs> {
@@ -181,6 +182,11 @@ export async function parseArguments(): Promise<CliArgs> {
       type: 'boolean',
       description: 'Run in IDE mode?',
     })
+    .option('sdk', {
+      type: 'boolean',
+      description: 'Run in SDK mode (non-interactive with verbose logging of all agent messages and tool calls)',
+      default: false,
+    })
 
     .version(await getCliVersion()) // This will enable the --version flag based on package.json
     .alias('v', 'version')
@@ -191,6 +197,11 @@ export async function parseArguments(): Promise<CliArgs> {
       if (argv.prompt && argv.promptInteractive) {
         throw new Error(
           'Cannot use both --prompt (-p) and --prompt-interactive (-i) together',
+        );
+      }
+      if (argv.sdk && argv.promptInteractive) {
+        throw new Error(
+          'Cannot use both --sdk and --prompt-interactive (-i) together. SDK mode is always non-interactive.',
         );
       }
       return true;

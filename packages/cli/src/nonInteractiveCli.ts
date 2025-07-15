@@ -47,6 +47,7 @@ export async function runNonInteractive(
   config: Config,
   input: string,
   prompt_id: string,
+  sdkMode: boolean = false,
 ): Promise<void> {
   await config.initialize();
   // Handle EPIPE errors when the output is piped to a command that closes early.
@@ -64,6 +65,16 @@ export async function runNonInteractive(
   const abortController = new AbortController();
   let currentMessages: Content[] = [{ role: 'user', parts: [{ text: input }] }];
   let turnCount = 0;
+  
+  // Log initial user message in SDK mode
+  if (sdkMode) {
+    console.log(JSON.stringify({
+      type: 'user_message',
+      content: input,
+      timestamp: new Date().toISOString()
+    }));
+  }
+  
   try {
     while (true) {
       turnCount++;
@@ -91,18 +102,50 @@ export async function runNonInteractive(
         prompt_id,
       );
 
+      let assistantMessage = '';
+      let thoughtContent = '';
+      
       for await (const resp of responseStream) {
         if (abortController.signal.aborted) {
           console.error('Operation cancelled.');
           return;
         }
+        
+        // Check for thought content in SDK mode
+        if (sdkMode && resp.candidates && resp.candidates.length > 0) {
+          const candidate = resp.candidates[0];
+          if (candidate.content && candidate.content.parts) {
+            for (const part of candidate.content.parts) {
+              if (part.thought) {
+                thoughtContent += part.thought;
+              }
+            }
+          }
+        }
+        
         const textPart = getResponseText(resp);
         if (textPart) {
-          process.stdout.write(textPart);
+          if (sdkMode) {
+            assistantMessage += textPart;
+          } else {
+            process.stdout.write(textPart);
+          }
         }
         if (resp.functionCalls) {
           functionCalls.push(...resp.functionCalls);
         }
+      }
+      
+      // Log assistant message in SDK mode
+      if (sdkMode && (assistantMessage || thoughtContent)) {
+        console.log(JSON.stringify({
+          type: 'assistant_message',
+          content: assistantMessage,
+          thought: thoughtContent || undefined,
+          timestamp: new Date().toISOString()
+        }));
+      } else if (!sdkMode && assistantMessage) {
+        process.stdout.write(assistantMessage);
       }
 
       if (functionCalls.length > 0) {
@@ -118,6 +161,17 @@ export async function runNonInteractive(
             prompt_id,
           };
 
+          // Log tool call in SDK mode
+          if (sdkMode) {
+            console.log(JSON.stringify({
+              type: 'tool_call',
+              id: callId,
+              name: fc.name,
+              args: fc.args,
+              timestamp: new Date().toISOString()
+            }));
+          }
+
           const toolResponse = await executeToolCall(
             config,
             requestInfo,
@@ -129,12 +183,31 @@ export async function runNonInteractive(
             const isToolNotFound = toolResponse.error.message.includes(
               'not found in registry',
             );
-            console.error(
-              `Error executing tool ${fc.name}: ${toolResponse.resultDisplay || toolResponse.error.message}`,
-            );
+            
+            if (sdkMode) {
+              console.log(JSON.stringify({
+                type: 'tool_response',
+                id: callId,
+                error: toolResponse.error.message,
+                timestamp: new Date().toISOString()
+              }));
+            } else {
+              console.error(
+                `Error executing tool ${fc.name}: ${toolResponse.resultDisplay || toolResponse.error.message}`,
+              );
+            }
+            
             if (!isToolNotFound) {
               process.exit(1);
             }
+          } else if (sdkMode) {
+            // Log successful tool response in SDK mode
+            console.log(JSON.stringify({
+              type: 'tool_response',
+              id: callId,
+              result: toolResponse.resultDisplay || toolResponse.responseParts,
+              timestamp: new Date().toISOString()
+            }));
           }
 
           if (toolResponse.responseParts) {
@@ -152,7 +225,9 @@ export async function runNonInteractive(
         }
         currentMessages = [{ role: 'user', parts: toolResponseParts }];
       } else {
-        process.stdout.write('\n'); // Ensure a final newline
+        if (!sdkMode) {
+          process.stdout.write('\n'); // Ensure a final newline
+        }
         return;
       }
     }
